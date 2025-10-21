@@ -548,6 +548,14 @@
                         <div class="stat-label">Total Ads Watched</div>
                     </div>
                 </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Leaderboard Management</h3>
+                    </div>
+                    <p style="margin-bottom: 15px; color: var(--text-secondary);">This will reset <strong>Total Income</strong> and <strong>Total Ads</strong> to 0 for all users, effectively resetting the leaderboard. User balances and other stats will <strong>not</strong> be affected.</p>
+                    <button class="btn btn-warning" id="resetLeaderboardBtn">Reset Leaderboard</button>
+                </div>
 
                 <div class="card">
                     <h3 class="card-title">Recent Withdrawals</h3>
@@ -739,7 +747,7 @@
             <div class="admin-page" id="tasksPage">
                 <div class="card">
                     <h3 class="card-title">Tasks Management</h3>
-                     <p style="text-align: center; color: var(--text-secondary); padding: 20px;">
+                     <p style="text-align: center; color: var(--text-secondary); padding: 20px; display: none;" id="noTasksMessage">
                         No tasks available at the moment. Add a new task to get started.
                     </p>
                     <div class="table-container">
@@ -907,6 +915,7 @@
         const pendingWithdrawalsElement = document.getElementById('pendingWithdrawals');
         const totalAdsWatchedElement = document.getElementById('totalAdsWatched');
         const recentWithdrawalsTable = document.getElementById('recentWithdrawalsTable');
+        const resetLeaderboardBtn = document.getElementById('resetLeaderboardBtn');
 
         // Notice elements
         const noticeText = document.getElementById('noticeText');
@@ -968,6 +977,7 @@
         const taskBonus = document.getElementById('taskBonus');
         const taskCategory = document.getElementById('taskCategory');
         const taskCorrectCode = document.getElementById('taskCorrectCode');
+        const noTasksMessage = document.getElementById('noTasksMessage');
         
         let adminSettings = {};
         let editingMethodId = null;
@@ -993,8 +1003,7 @@
                         notice: "Welcome to Star Point! Watch ads and earn money.",
                         menuLinks: { youtube: "", telegram: "", tiktok: "", supportAdmin1: "", supportAdmin2: "" },
                         withdrawalMethods: [],
-                        adSettings: { firstTwoAdsDuration: 15, thirdAdDuration: 30, pointsPerAd: 0.07, dailyAdLimit: 2000, referralBonus: 2 },
-                        tasks: []
+                        adSettings: { firstTwoAdsDuration: 15, thirdAdDuration: 30, pointsPerAd: 0.07, dailyAdLimit: 2000, referralBonus: 2 }
                     };
                     await db.collection('admin').doc('settings').set(defaultSettings);
                     adminSettings = defaultSettings;
@@ -1005,7 +1014,7 @@
                 updateMenuLinksDisplay();
                 updateWithdrawalMethodsDisplay();
                 updateAdSettingsDisplay();
-                updateTasksDisplay();
+                updateTasksDisplay(); // Changed: Now reads from 'tasks' collection
                 updateDashboard();
                 updateWithdrawalHistoryDisplay();
                 updateUsersDisplay();
@@ -1122,20 +1131,21 @@
                     return showNotification('Please fill all fields correctly', 'error');
                 }
                 
-                let newTasks = [...(adminSettings.tasks || [])];
+                const taskData = { title, link, bonus, category, correctCode };
+
+                let promise;
                 if (editingTaskId) {
-                    const index = newTasks.findIndex(t => t.id === editingTaskId);
-                    if (index > -1) newTasks[index] = { id: editingTaskId, title, link, bonus, category, correctCode };
+                    // Update existing task in 'tasks' collection
+                    promise = db.collection('tasks').doc(editingTaskId).update(taskData);
                 } else {
-                    const newId = Date.now();
-                    newTasks.push({ id: newId, title, link, bonus, category, correctCode });
+                    // Add new task to 'tasks' collection
+                    promise = db.collection('tasks').add(taskData);
                 }
 
-                db.collection('admin').doc('settings').update({ tasks: newTasks })
-                    .then(() => {
+                promise.then(() => {
                         showNotification('Task saved!', 'success');
                         taskModal.classList.remove('active');
-                        loadAllData();
+                        updateTasksDisplay(); // Refresh tasks list
                     })
                     .catch(e => showNotification('Error: ' + e.message, 'error'));
             });
@@ -1161,6 +1171,8 @@
                     showNotification('Error updating user: ' + error.message, 'error');
                 }
             });
+
+            resetLeaderboardBtn.addEventListener('click', resetLeaderboard);
         }
         
         // Update UI functions
@@ -1196,19 +1208,32 @@
             });
         }
         
-        function updateTasksDisplay() {
+        async function updateTasksDisplay() {
             tasksTable.innerHTML = '';
-            (adminSettings.tasks || []).forEach(task => {
-                const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td>${task.title}</td><td><a href="${task.link}" target="_blank">View</a></td><td>৳ ${task.bonus}</td>
-                    <td>${task.category}</td><td>${task.correctCode}</td>
-                    <td class="action-buttons">
-                        <button class="btn btn-sm" onclick="editTask(${task.id})">Edit</button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteTask(${task.id})">Delete</button>
-                    </td>`;
-                tasksTable.appendChild(row);
-            });
+            try {
+                const snapshot = await db.collection('tasks').get();
+                if (snapshot.empty) {
+                    noTasksMessage.style.display = 'block';
+                    return;
+                }
+                noTasksMessage.style.display = 'none';
+
+                snapshot.forEach(doc => {
+                    const task = doc.data();
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${task.title}</td><td><a href="${task.link}" target="_blank">View</a></td><td>৳ ${task.bonus}</td>
+                        <td>${task.category}</td><td>${task.correctCode}</td>
+                        <td class="action-buttons">
+                            <button class="btn btn-sm" onclick="editTask('${doc.id}')">Edit</button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteTask('${doc.id}')">Delete</button>
+                        </td>`;
+                    tasksTable.appendChild(row);
+                });
+            } catch (error) {
+                console.error("Error fetching tasks: ", error);
+                showNotification('Could not load tasks.', 'error');
+            }
         }
 
         async function updateDashboard() {
@@ -1301,26 +1326,70 @@
             }
         }
         
-        function editTask(id) {
-            const task = (adminSettings.tasks || []).find(t => t.id === id);
-            if (task) {
-                editingTaskId = id;
-                taskModalTitle.textContent = 'Edit Task';
-                taskTitle.value = task.title;
-                taskLink.value = task.link;
-                taskBonus.value = task.bonus;
-                taskCategory.value = task.category;
-                taskCorrectCode.value = task.correctCode;
-                taskModal.classList.add('active');
+        async function editTask(id) {
+            try {
+                const taskDoc = await db.collection('tasks').doc(id).get();
+                if (taskDoc.exists) {
+                    const task = taskDoc.data();
+                    editingTaskId = id;
+                    taskModalTitle.textContent = 'Edit Task';
+                    taskTitle.value = task.title;
+                    taskLink.value = task.link;
+                    taskBonus.value = task.bonus;
+                    taskCategory.value = task.category;
+                    taskCorrectCode.value = task.correctCode;
+                    taskModal.classList.add('active');
+                } else {
+                    showNotification('Task not found.', 'error');
+                }
+            } catch (e) {
+                showNotification('Error fetching task: ' + e.message, 'error');
             }
         }
         
         async function deleteTask(id) {
             if (confirm('Are you sure you want to delete this task?')) {
-                const newTasks = (adminSettings.tasks || []).filter(t => t.id !== id);
-                await db.collection('admin').doc('settings').update({ tasks: newTasks });
-                await loadAllData();
-                showNotification('Task deleted!', 'success');
+                try {
+                    await db.collection('tasks').doc(id).delete();
+                    await updateTasksDisplay();
+                    showNotification('Task deleted!', 'success');
+                } catch (e) {
+                    showNotification('Error deleting task: ' + e.message, 'error');
+                }
+            }
+        }
+
+        async function resetLeaderboard() {
+            if (!confirm('Are you sure you want to reset the leaderboard? This will set Total Income and Total Ads to 0 for ALL users. This action cannot be undone.')) {
+                return;
+            }
+
+            showNotification('Resetting leaderboard... This may take a moment.', 'warning');
+            
+            try {
+                const usersSnapshot = await db.collection('users').get();
+                if (usersSnapshot.empty) {
+                    return showNotification('No users found to reset.', 'info');
+                }
+
+                const batch = db.batch();
+                usersSnapshot.docs.forEach(doc => {
+                    const userRef = db.collection('users').doc(doc.id);
+                    // This ONLY resets leaderboard data. Main balance is NOT affected.
+                    batch.update(userRef, {
+                        totalIncome: 0,
+                        totalAds: 0
+                    });
+                });
+
+                await batch.commit();
+
+                await updateDashboard();
+                await updateUsersDisplay();
+                showNotification('Leaderboard has been reset successfully!', 'success');
+            } catch (error) {
+                console.error("Error resetting leaderboard:", error);
+                showNotification('Failed to reset leaderboard: ' + error.message, 'error');
             }
         }
         
